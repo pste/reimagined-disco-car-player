@@ -1,0 +1,80 @@
+package dev.steo.autoproxy
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+
+/**
+ * Activity-contenitore: mostra la WebView condivisa (di proprietà di WebEngine)
+ * quando l'app è in primo piano. Alla chiusura la WebView viene solo staccata
+ * dalla gerarchia: continua a girare per il servizio media.
+ */
+class MainActivity : ComponentActivity() {
+
+    private lateinit var container: FrameLayout
+
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        container = FrameLayout(this)
+        container.setBackgroundColor(android.graphics.Color.BLACK)
+        setContentView(container)
+
+        // con targetSdk 35+ la finestra è edge-to-edge: senza questo padding la
+        // WebView finisce sotto status bar e barra gesti; ime() tiene il campo
+        // di login sopra la tastiera
+        ViewCompat.setOnApplyWindowInsetsListener(container) { view, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars()
+                    or WindowInsetsCompat.Type.displayCutout()
+                    or WindowInsetsCompat.Type.ime()
+            )
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            WindowInsetsCompat.CONSUMED
+        }
+
+        // il servizio deve esistere perché Android Auto trovi la sessione
+        startService(Intent(this, PlaybackService::class.java))
+
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val webView = WebEngine.get(this).webView
+        (webView.parent as? ViewGroup)?.removeView(webView)
+        container.addView(
+            webView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            )
+        )
+    }
+
+    override fun onStop() {
+        // stacca ma non distrugge: la pagina continua a suonare in background
+        val webView = WebEngine.get(this).webView
+        if (webView.parent === container) {
+            container.removeView(webView)
+        }
+        super.onStop()
+    }
+}
