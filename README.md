@@ -1,4 +1,4 @@
-# android-auto-mse-proxy
+# reimagined-disco-car-player
 
 App Android nativa che fa da ponte tra il player web di **reimagined-disco**
 (MSE + `navigator.mediaSession`) e **Android Auto**: play/pause/next/prev,
@@ -19,14 +19,17 @@ WebEngine (singleton, possiede la WebView)
         │  evaluateJavascript()     ▲ AndroidAutoBridge.postMessage()
         ▼                           │
 bridge.js (iniettato a document-start)
-        │  __aaInvoke('play'|...)   ▲ intercetta navigator.mediaSession
+        │  __aaInvoke('play'|...)   ▲ polyfilla navigator.mediaSession
         ▼                           │
 player web (MSE)  ──────────────────┘
 ```
 
-- **Su (pagina → nativo)**: `bridge.js` avvolge `mediaSession.metadata`,
-  `playbackState`, `setPositionState` e `setActionHandler`; ogni cambiamento
-  viene serializzato in JSON verso il bridge nativo. La copertina viene
+- **Su (pagina → nativo)**: la WebView di Android **non implementa** la Media
+  Session Web API, quindi `bridge.js` la **polyfilla**: installa un
+  `navigator.mediaSession` finto (più il costruttore `MediaMetadata`) la cui
+  implementazione inoltra `metadata`, `playbackState`, `setPositionState` e
+  `setActionHandler` in JSON al bridge nativo. Se una futura WebView esponesse
+  l'API vera, lo script ripiega sul wrapping di quella. La copertina viene
   fetchata in pagina (gestisce anche `blob:`/`data:`) e passata in base64.
 - **Giù (nativo → pagina)**: i comandi della MediaSession arrivano a
   `WebPlayer` (Media3 `SimpleBasePlayer`) che chiama `window.__aaInvoke(action)`,
@@ -34,33 +37,44 @@ player web (MSE)  ──────────────────┘
 - La WebView appartiene a `WebEngine` (singleton a livello di applicazione):
   sopravvive all'activity, l'audio continua in background. `MainActivity` la
   attacca/stacca dalla propria gerarchia quando è visibile.
-- Il player web **non richiede modifiche**: basta che valorizzi
-  `navigator.mediaSession` (già fatto in reimagined-disco-ui).
+- Il player web **non richiede modifiche**: basta che usi l'API
+  `mediaSession` dietro il feature-check `'mediaSession' in navigator`
+  (già fatto in reimagined-disco-ui) — il polyfill la fa trovare presente.
 
 ## Configurazione
 
 L'URL del player si imposta in `app/build.gradle.kts`:
 
 ```kotlin
-buildConfigField("String", "PLAYER_URL", "\"http://192.168.1.100:5173/\"")
+buildConfigField("String", "PLAYER_URL", "\"https://music.nestix.dev/\"")
 ```
 
-`usesCleartextTraffic="true"` è attivo nel manifest perché il server gira in
-LAN su http. I cookie (sessione di login) sono persistenti di default nella
-WebView: il login fatto nella UI sopravvive ai riavvii.
+`usesCleartextTraffic="true"` è attivo nel manifest per permettere anche URL
+http in LAN (es. dev server Vite); con l'URL https di produzione non serve.
+I cookie (sessione di login) sono persistenti di default nella WebView: il
+login fatto nella UI sopravvive ai riavvii.
 
 ## Build
 
 ```bash
 ./gradlew :app:assembleDebug
-adb install app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Oppure aprire la cartella in Android Studio.
+Oppure aprire la cartella in Android Studio. Per il debug del bridge:
+
+```bash
+adb logcat -s WebEngine -d
+```
+
+(mostra iniezione dello script, probe a fine caricamento pagina, ogni evento
+ricevuto dalla pagina e i console.log della pagina stessa).
 
 ## Test con DHU (Desktop Head Unit)
 
-1. `sdkmanager "extras;google;auto"` (una tantum)
+1. Installare il DHU una tantum: da Android Studio → Settings → Android SDK →
+   SDK Tools → "Android Auto Desktop Head Unit" (oppure
+   `sdkmanager "extras;google;auto"` se i cmdline-tools sono installati)
 2. Sul telefono: Android Auto → impostazioni sviluppatore → *Avvia modalità head unit server*
 3. `adb forward tcp:5277 tcp:5277`
 4. `~/Android/Sdk/extras/google/auto/desktop-head-unit`
@@ -72,6 +86,10 @@ Per vedere l'app in Auto senza pubblicarla sul Play Store serve abilitare
 
 ## Limiti noti / TODO
 
+- **Autofill password manager**: Bitwarden & co. non compilano il login nella
+  WebView (limite dell'integrazione WebView/Autofill framework; il form della
+  UI è già corretto). Workaround: metodo accessibilità di Bitwarden, o
+  copia/incolla una tantum — il cookie di sessione è persistente.
 - **Primo gesto utente**: i browser richiedono un gesto per avviare l'audio.
   `mediaPlaybackRequiresUserGesture = false` è impostato, ma se l'AudioContext
   della pagina parte sospeso può comunque servire un primo tap nella UI web.
@@ -89,3 +107,12 @@ Per vedere l'app in Auto senza pubblicarla sul Play Store serve abilitare
   Esporre artisti/album dall'API di reimagined-disco è un passo successivo.
 - **`seekto`**: inoltrato solo se la pagina registra l'handler; idem
   next/prev (i bottoni in Auto compaiono solo per le azioni registrate).
+  Oggi la UI registra play/pause/nexttrack/previoustrack → niente seek
+  dalla schermata Auto finché la UI non registra `seekto`.
+- **Throttling posizione**: la pagina manda `position` ~4 volte/secondo e ogni
+  evento invalida lo stato del player nativo. Media3 regge, ma per risparmiare
+  batteria si può throttlare in `bridge.js` (es. 1 evento/secondo, la
+  posizione intermedia è comunque estrapolata da `WebPlayer`).
+- **applicationId**: resta `dev.steo.autoproxy` anche se il progetto si chiama
+  reimagined-disco-car-player — cambiarlo = app nuova per Android, si perdono
+  login e dati dell'app installata.

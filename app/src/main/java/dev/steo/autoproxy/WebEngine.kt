@@ -51,7 +51,21 @@ class WebEngine private constructor(context: Context) {
     }
 
     val webView: WebView
+
+    // eventi del bridge possono arrivare prima che il service agganci il
+    // listener (es. 'actions' viene mandato una sola volta all'avvio pagina):
+    // li cachiamo per tipo e li rigiochiamo all'aggancio
+    private val lastEventByType = LinkedHashMap<String, String>()
+
     var listener: Listener? = null
+        set(value) {
+            field = value
+            if (value != null) {
+                mainHandler.post {
+                    lastEventByType.values.toList().forEach { dispatch(it, replay = true) }
+                }
+            }
+        }
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -66,13 +80,28 @@ class WebEngine private constructor(context: Context) {
 
         val bridgeJs = context.assets.open("bridge.js").bufferedReader().use { it.readText() }
 
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+        val docStartSupported = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        Log.i(TAG, "iniezione bridge: ${if (docStartSupported) "document-start" else "fallback onPageStarted"}")
+        if (docStartSupported) {
             WebViewCompat.addDocumentStartJavaScript(webView, bridgeJs, setOf("*"))
-        } else {
-            // fallback: iniezione a onPageStarted (meno affidabile ma funziona)
-            webView.webViewClient = object : WebViewClient() {
-                override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+        }
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                if (!docStartSupported) {
+                    // fallback: iniezione a onPageStarted (meno affidabile)
                     view.evaluateJavascript(bridgeJs, null)
+                }
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                // probe diagnostico: verifica i prerequisiti del bridge
+                view.evaluateJavascript(
+                    "JSON.stringify({installed: !!window.__aaBridgeInstalled," +
+                        " bridge: typeof AndroidAutoBridge," +
+                        " mediaSession: !!navigator.mediaSession})"
+                ) { result ->
+                    Log.i(TAG, "probe pagina $url -> $result")
                 }
             }
         }
@@ -103,11 +132,16 @@ class WebEngine private constructor(context: Context) {
         }
     }
 
-    private fun dispatch(json: String) {
-        val l = listener ?: return
+    private fun dispatch(json: String, replay: Boolean = false) {
         try {
             val msg = JSONObject(json)
-            when (msg.optString("type")) {
+            val type = msg.optString("type")
+            if (!replay) {
+                lastEventByType[type] = json
+                Log.i(TAG, "evento '$type' (listener=${listener != null}): ${json.take(120)}")
+            }
+            val l = listener ?: return
+            when (type) {
                 "ready" -> {
                     Log.i(TAG, "bridge installato nella pagina")
                 }

@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "android-auto-mse-proxy"
+rootProject.name = "reimagined-disco-car-player"
 include(":app")
