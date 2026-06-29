@@ -45,6 +45,11 @@ class MainActivity : ComponentActivity() {
             WindowInsetsCompat.CONSUMED
         }
 
+        // crea il WebEngine SUBITO col contesto dell'Activity, PRIMA di startService: l'autofill
+        // di Chromium si abilita alla costruzione della WebView in base al contesto, che dev'essere
+        // un'Activity e non l'application context con cui il service costruirebbe la WebView
+        WebEngine.get(this)
+
         // il servizio deve esistere perché Android Auto trovi la sessione
         startService(Intent(this, PlaybackService::class.java))
 
@@ -58,7 +63,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        val webView = WebEngine.get(this).webView
+        val engine = WebEngine.get(this)
+        // l'autofill (Bitwarden) si aggancia solo con un contesto di Activity: lo impostiamo
+        // PRIMA di attaccare la WebView alla finestra (il bind avviene a onAttachedToWindow)
+        engine.setActivityContext(this)
+        val webView = engine.webView
         (webView.parent as? ViewGroup)?.removeView(webView)
         container.addView(
             webView,
@@ -71,10 +80,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         // stacca ma non distrugge: la pagina continua a suonare in background
-        val webView = WebEngine.get(this).webView
+        val engine = WebEngine.get(this)
+        val webView = engine.webView
         if (webView.parent === container) {
             container.removeView(webView)
         }
+        // torna all'application context: non trattenere l'Activity distrutta (memory leak)
+        engine.resetToApplicationContext()
         super.onStop()
     }
 }

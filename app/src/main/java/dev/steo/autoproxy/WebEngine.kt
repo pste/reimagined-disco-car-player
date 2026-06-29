@@ -2,6 +2,7 @@ package dev.steo.autoproxy
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.MutableContextWrapper
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -43,9 +44,14 @@ class WebEngine private constructor(context: Context) {
         @Volatile
         private var instance: WebEngine? = null
 
+        // NB: passa il context RAW (non applicationContext). Se il primo a chiamare è la
+        // MainActivity, la WebView nasce con un contesto di Activity e l'AutofillProvider di
+        // Chromium si abilita (il check avviene alla costruzione della WebView). Se invece il
+        // primo è il service (avvio headless da Android Auto) nasce con app context: niente
+        // autofill in quella sessione, ma la riproduzione funziona.
         fun get(context: Context): WebEngine {
             return instance ?: synchronized(this) {
-                instance ?: WebEngine(context.applicationContext).also { instance = it }
+                instance ?: WebEngine(context).also { instance = it }
             }
         }
     }
@@ -69,8 +75,18 @@ class WebEngine private constructor(context: Context) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // La WebView è di application-scope (l'audio sopravvive all'Activity), ma l'Autofill
+    // Framework (Bitwarden & co.) si aggancia SOLO se la WebView è COSTRUITA con un contesto di
+    // Activity: il check di supporto autofill di Chromium avviene alla costruzione, non basta lo
+    // swap successivo. Quindi la base del wrapper parte dal context che costruisce la WebView
+    // (Activity all'avvio normale, vedi WebEngine.get + MainActivity.onCreate). Mentre la
+    // MainActivity la mostra reimpostiamo comunque la base sull'Activity (setActivityContext); in
+    // background torniamo all'app context (resetToApplicationContext) per non leakare l'Activity.
+    private val appContext = context.applicationContext
+    private val contextWrapper = MutableContextWrapper(context)
+
     init {
-        webView = WebView(context)
+        webView = WebView(contextWrapper)
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -115,6 +131,21 @@ class WebEngine private constructor(context: Context) {
 
         webView.addJavascriptInterface(Bridge(), "AndroidAutoBridge")
         webView.loadUrl(BuildConfig.PLAYER_URL)
+    }
+
+    /**
+     * La MainActivity lo chiama quando mostra la WebView. L'Autofill Framework richiede un
+     * contesto di Activity: va impostato PRIMA di attaccare la WebView alla finestra, così al
+     * bind dell'autofill (onAttachedToWindow) il contesto risolve all'Activity e Bitwarden &co.
+     * possono proporre le credenziali.
+     */
+    fun setActivityContext(activity: Context) {
+        contextWrapper.baseContext = activity
+    }
+
+    /** Ritorno all'application context quando l'Activity non è più visibile. */
+    fun resetToApplicationContext() {
+        contextWrapper.baseContext = appContext
     }
 
     /** Invoca un action handler registrato dalla pagina con setActionHandler. */

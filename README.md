@@ -86,10 +86,18 @@ Per vedere l'app in Auto senza pubblicarla sul Play Store serve abilitare
 
 ## Limiti noti / TODO
 
-- **Autofill password manager**: Bitwarden & co. non compilano il login nella
-  WebView (limite dell'integrazione WebView/Autofill framework; il form della
-  UI è già corretto). Workaround: metodo accessibilità di Bitwarden, o
-  copia/incolla una tantum — il cookie di sessione è persistente.
+- **Autofill password manager**: risolto (verificato su device). La WebView era
+  creata con l'application context (`WebEngine` è app-scoped per tenere l'audio
+  in background), ma l'AutofillProvider di Chromium si abilita **alla costruzione**
+  della WebView in base al contesto, che dev'essere un'Activity. Fix: la WebView
+  usa un `MutableContextWrapper` e la sua base è il context che la costruisce —
+  perché sia un'Activity, `WebEngine.get` riceve il context RAW e `MainActivity.onCreate`
+  chiama `WebEngine.get(this)` **prima** di `startService`, così è l'Activity (non il
+  service) a costruire la WebView. La base torna all'app context in `onStop` per non
+  leakare l'Activity. Caso limite residuo: avvio "headless" da Android Auto senza mai
+  aprire il telefono → la WebView nasce dal service con app context, niente autofill in
+  quella sessione (la riproduzione funziona); resta il workaround accessibilità/incolla,
+  col cookie di sessione persistente.
 - **Primo gesto utente**: i browser richiedono un gesto per avviare l'audio.
   `mediaPlaybackRequiresUserGesture = false` è impostato, ma se l'AudioContext
   della pagina parte sospeso può comunque servire un primo tap nella UI web.
